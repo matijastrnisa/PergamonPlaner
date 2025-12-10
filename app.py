@@ -3,6 +3,9 @@ import pandas as pd
 from datetime import date, timedelta
 import plotly.express as px
 
+# ---------------------------------------------------------
+# PAGE CONFIG
+# ---------------------------------------------------------
 st.set_page_config(page_title="Pergamon Mini-Planer", layout="wide")
 st.title("🕌 Pergamon Mini-Planer – Rollen & Personen (Multi-Rolle pro Film)")
 
@@ -10,15 +13,15 @@ st.markdown("""
 Diese Version erlaubt dir:
 
 - Personen zu definieren und ihnen Rollen zuzuweisen  
-- Filme zu definieren mit **BS-Fenster**  
-- Pro Film für **jede Rolle unterschiedliche Arbeitstage** einzutragen  
+- Filme mit BS-Fenster zu definieren  
+- Pro Film für **jede Rolle** unterschiedliche Arbeitstage einzutragen  
 - Die App verteilt dann pro Film & Rolle die Tage auf passende Personen  
 """)
 
 today = date.today()
 
 # ---------------------------------------------------------
-# 1️⃣ Personen & Rollen definieren
+# 1️⃣ PERSONEN & ROLLEN DEFINIEREN
 # ---------------------------------------------------------
 st.subheader("1️⃣ Personen & Rollen")
 
@@ -49,12 +52,12 @@ for person in personen:
     person_roles[person] = st.multiselect(
         f"Rollen für **{person}**",
         options=rollen,
-        default=rollen,  # erstmal: alle können alles, du kannst abwählen
+        default=rollen,  # standard: alle können alles, kannst du anpassen
         key=f"roles_{person}"
     )
 
 # ---------------------------------------------------------
-# 2️⃣ Filme definieren
+# 2️⃣ FILME DEFINIEREN
 # ---------------------------------------------------------
 st.subheader("2️⃣ Filme definieren")
 
@@ -73,7 +76,11 @@ for i in range(num_films):
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        name = st.text_input(f"Name Film {i+1}", value=f"Film {i+1}", key=f"film_name_{i}")
+        name = st.text_input(
+            f"Name Film {i+1}",
+            value=f"Film {i+1}",
+            key=f"film_name_{i}"
+        )
     with col2:
         bs_start = st.date_input(
             f"BS-Start {i+1}",
@@ -92,18 +99,21 @@ for i in range(num_films):
 
     st.markdown(f"_Arbeitstage je Rolle für **{name}**:_")
     role_days = {}
-    cols = st.columns(len(rollen)) if rollen else []
-    for j, rolle in enumerate(rollen):
-        with cols[j]:
-            tage = st.number_input(
-                f"{rolle}",
-                min_value=0,
-                max_value=365,
-                value=0,
-                step=1,
-                key=f"film_{i}_role_{rolle}"
-            )
-            role_days[rolle] = tage
+    if rollen:
+        cols = st.columns(len(rollen))
+        for j, rolle in enumerate(rollen):
+            with cols[j]:
+                tage = st.number_input(
+                    f"{rolle}",
+                    min_value=0,
+                    max_value=365,
+                    value=0,
+                    step=1,
+                    key=f"film_{i}_role_{rolle}"
+                )
+                role_days[rolle] = tage
+    else:
+        role_days = {}
 
     filme.append({
         "Film": name,
@@ -113,7 +123,7 @@ for i in range(num_films):
     })
 
 # ---------------------------------------------------------
-# 3️⃣ Planungs-Parameter
+# 3️⃣ PLANUNGS-PARAMETER
 # ---------------------------------------------------------
 st.subheader("3️⃣ Planungs-Parameter")
 
@@ -127,7 +137,7 @@ max_tage_pro_tag = st.number_input(
 st.markdown("_Hinweis: Es wird **nicht in der Vergangenheit** geplant (nur ab heute)._")
 
 # ---------------------------------------------------------
-# 4️⃣ Planung starten
+# 4️⃣ PLANUNG STARTEN
 # ---------------------------------------------------------
 st.subheader("4️⃣ Planung ausführen")
 
@@ -170,7 +180,9 @@ if st.button("🚀 Planung berechnen"):
                 ]
 
                 if not passende_personen:
-                    st.warning(f"⚠️ Film „{film_name}“: keine Person hat die Rolle „{rolle}“.")
+                    st.warning(
+                        f"⚠️ Film „{film_name}“: keine Person hat die Rolle „{rolle}“."
+                    )
                     continue
 
                 # Greedy: über Tage iterieren
@@ -197,49 +209,50 @@ if st.button("🚀 Planung berechnen"):
                     t_index += 1
 
                 if remaining > 0:
-                    st.warning(f"⚠️ Film „{film_name}“ / Rolle „{rolle}“: {remaining} Tage konnten nicht untergebracht werden.")
+                    st.warning(
+                        f"⚠️ Film „{film_name}“ / Rolle „{rolle}“: {remaining} Tage konnten nicht untergebracht werden."
+                    )
 
         if not assignments:
             st.error("Es konnten keine Zuteilungen erzeugt werden.")
         else:
             df_assign = pd.DataFrame(assignments)
+
+            # Ergebnis-Tabelle
             st.subheader("📘 Ergebnis – Zuteilungen")
             st.dataframe(df_assign, use_container_width=True)
 
-            # Gantt-Diagramm
-st.subheader("📊 Gantt-Diagramm")
+            # -------------------------------------------------
+            # GANTT-DIAGRAMM
+            # -------------------------------------------------
+            st.subheader("📊 Gantt-Diagramm")
 
-df_gantt = df_assign.copy()
-df_gantt["Start"] = pd.to_datetime(df_gantt["Datum"])
-df_gantt["Ende"] = df_gantt["Start"] + pd.to_timedelta(1, unit="D")
+            df_gantt = df_assign.copy()
+            df_gantt["Start"] = pd.to_datetime(df_gantt["Datum"])
+            df_gantt["Ende"] = df_gantt["Start"] + pd.to_timedelta(1, unit="D")
 
-try:
-    fig = px.timeline(
-        df_gantt,
-        x_start="Start",
-        x_end="Ende",
-        y="Film",
-        color="Person",
-        title="Pergamon Mini-Planer – Verteilung nach Film/Rolle"
-    )
-    fig.update_yaxes(autorange="reversed")
-    st.plotly_chart(fig, use_container_width=True)
-except Exception as e:
-    st.error(f"Fehler beim Erzeugen des Gantt-Diagramms: {e}")
+            try:
+                fig = px.timeline(
+                    df_gantt,
+                    x_start="Start",
+                    x_end="Ende",
+                    y="Film",
+                    color="Person",
+                    title="Pergamon Mini-Planer – Verteilung nach Film/Rolle"
+                )
+                fig.update_yaxes(autorange="reversed")
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.error(f"Fehler beim Erzeugen des Gantt-Diagramms: {e}")
 
-# Export
-st.subheader("📥 Export")
+            # -------------------------------------------------
+            # EXPORT
+            # -------------------------------------------------
+            st.subheader("📥 Export")
 
-out = df_assign.copy()
-out["Datum"] = out["Datum"].astype(str)
-csv_bytes = out.to_csv(index=False).encode("utf-8")
-
-st.download_button(
-    "Zuteilungen als CSV herunterladen",
-    data=csv_bytes,
-    file_name="Pergamon_MultiRole_Zuteilungen.csv",
-    mime="text/csv"
-)
+            out = df_assign.copy()
+            out["Datum"] = out["Datum"].astype(str)
+            csv_bytes = out.to_csv(index=False).encode("utf-8")
 
             st.download_button(
                 "Zuteilungen als CSV herunterladen",
