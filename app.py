@@ -209,22 +209,26 @@ if st.button("🚀 Planung berechnen"):
             # Gantt
             st.subheader("📊 Gantt-Diagramm")
             df_gantt = df_assign.copy()
-            df_gantt["Start"] = df_gantt["Datum"]
-            df_gantt["Ende"] = df_gantt["Datum"]
 
-            try:
-                fig = px.timeline(
-                    df_gantt,
-                    x_start="Start",
-                    x_end="Ende",
-                    y="Film",
-                    color="Person",
-                    title="Pergamon Mini-Planer – Verteilung nach Film/Rolle"
-                )
-                fig.update_yaxes(autorange="reversed")
-                st.plotly_chart(fig, use_container_width=True)
-            except Exception as e:
-                st.error(f"Fehler beim Erzeugen des Gantt-Diagramms: {e}")
+# Sicherstellen, dass Datum wirklich datetime ist
+df_gantt["Start"] = pd.to_datetime(df_gantt["Datum"])
+# Gib dem Balken eine Länge von 1 Tag, sonst sieht man fast nichts
+df_gantt["Ende"] = df_gantt["Start"] + pd.to_timedelta(1, unit="D")
+
+try:
+    fig = px.timeline(
+        df_gantt,
+        x_start="Start",
+        x_end="Ende",
+        y="Film",
+        color="Person",
+        title="Pergamon Mini-Planer – Verteilung nach Film/Rolle"
+    )
+    fig.update_yaxes(autorange="reversed")
+    st.plotly_chart(fig, use_container_width=True)
+except Exception as e:
+    st.error(f"Fehler beim Erzeugen des Gantt-Diagramms: {e}")
+
 
             # CSV-Export
             st.subheader("📥 Export")
