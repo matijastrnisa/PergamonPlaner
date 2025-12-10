@@ -1,315 +1,172 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-from datetime import timedelta
+from datetime import date, timedelta
 import plotly.express as px
-import io
 
-# ---------------------------------------------------------
-# PASSWORD PROTECTION
-# ---------------------------------------------------------
-APP_PASSWORD = "PergamonSecure2024"
-
-password_input = st.sidebar.text_input("🔒 Passwort:", type="password")
-if password_input != APP_PASSWORD:
-    st.error("Falsches Passwort.")
-    st.stop()
-
-# ---------------------------------------------------------
-# PAGE SETUP
-# ---------------------------------------------------------
-st.set_page_config(page_title="Pergamon Planer", layout="wide")
-st.title("🕌 Pergamon Planer – Automatische Kapazitäts- & Terminplanung")
+st.set_page_config(page_title="Pergamon Mini-Planer", layout="wide")
+st.title("🕌 Pergamon Mini-Planer – Test für 1–2 Filme")
 
 st.markdown("""
-Bitte die drei Dateien hochladen:
+Diese kleine Version ist nur zum **Testen der Logik** gedacht:
 
-1. **PMU.xlsx** (BS-Plan, blaue Linien)  
-2. **MP.xlsx** (Interner Kalender)  
-3. **Zeitbudget.xlsx** (berechnete Arbeitstage pro Film)  
+- Keine Excel-Uploads
+- Du definierst 1–2 Filme manuell (Name, BS-Zeitraum, Arbeitstage)
+- Du definierst die Personen
+- Die App verteilt automatisch die Arbeitstage auf freie Tage im BS-Zeitraum
 """)
 
 # ---------------------------------------------------------
-# FILE UPLOADS
+# 1. Filme definieren
 # ---------------------------------------------------------
-col1, col2, col3 = st.columns(3)
+st.subheader("1️⃣ Filme definieren")
 
-with col1:
-    pmu_file = st.file_uploader("📘 PMU (BS-Plan)", type=["xlsx"])
+num_films = st.number_input(
+    "Wie viele Filme möchtest du testen?",
+    min_value=1,
+    max_value=2,
+    value=1,
+    step=1
+)
 
-with col2:
-    mp_file = st.file_uploader("📗 MP (interner Plan)", type=["xlsx"])
+filme = []
+today = date.today()
 
-with col3:
-    zb_file = st.file_uploader("📙 Zeitbudget (Arbeitstage)", type=["xlsx"])
+for i in range(num_films):
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        name = st.text_input(f"Film {i+1} – Name", value=f"Film {i+1}")
+    with col2:
+        bs_start = st.date_input(f"Film {i+1} – BS-Start", value=today + timedelta(days=7), key=f"start_{i}")
+    with col3:
+        bs_ende = st.date_input(f"Film {i+1} – BS-Ende", value=today + timedelta(days=37), key=f"ende_{i}")
+    with col4:
+        arbeitstage = st.number_input(f"Film {i+1} – Arbeitstage", min_value=1, max_value=365, value=10, step=1, key=f"tage_{i}")
 
+    if bs_ende < bs_start:
+        st.error(f"Film {i+1}: BS-Ende darf nicht vor BS-Start liegen.")
+    filme.append({
+        "Film": name,
+        "BS_Start": bs_start,
+        "BS_Ende": bs_ende,
+        "Arbeitstage": arbeitstage
+    })
 
 # ---------------------------------------------------------
-# HELPER FUNCTIONS
+# 2. Personen definieren
 # ---------------------------------------------------------
+st.subheader("2️⃣ Personen definieren")
 
-def extract_films_from_zeitbudget(zb_df):
-    """Erkennt die Filmliste im Zeitbudget."""
-    col0 = zb_df.iloc[:, 0].astype(str)
-    at_row = col0[col0 == "AT"].index[0]
+personen_input = st.text_input(
+    "Personen (Komma-getrennt, z. B. „Ana, Anna, Mareike“)",
+    value="Ana, Anna, Mareike"
+)
 
-    films = []
-    for i in range(at_row + 1, len(zb_df)):
-        name = str(zb_df.iloc[i, 0]).strip()
-        if not name:
-            break
-        if "∑" in name or "Laufzeit" in name or "GESAMT" in name:
-            continue
-        films.append(name)
+personen = [p.strip() for p in personen_input.split(",") if p.strip()]
 
-    return films
+if not personen:
+    st.warning("Bitte mindestens eine Person eintragen.")
 
+max_tage_pro_tag = st.number_input(
+    "Max. Anzahl Filme, die eine Person pro Tag machen darf",
+    min_value=1,
+    max_value=3,
+    value=1
+)
 
-def extract_date_columns(pmu_df):
-    """Erkennt Datums-Spalten im PMU."""
-    header = pmu_df.iloc[0]
-    mapping = {}
+# ---------------------------------------------------------
+# 3. Planung ausführen
+# ---------------------------------------------------------
+st.subheader("3️⃣ Planung starten")
 
-    for col in pmu_df.columns[1:]:
-        try:
-            mapping[col] = pd.to_datetime(header[col]).date()
-        except:
-            pass
+if st.button("🚀 Planung berechnen"):
+    if not personen:
+        st.error("Keine Personen definiert.")
+    else:
+        # Kalender: für jeden Film die Tage im BS-Fenster
+        assignments = []
 
-    return mapping
+        for film in filme:
+            film_name = film["Film"]
+            start = film["BS_Start"]
+            ende = film["BS_Ende"]
+            remaining = film["Arbeitstage"]
 
+            # Alle Tage im Zeitraum
+            tage = []
+            current = start
+            while current <= ende:
+                if current >= today:  # NICHT in der Vergangenheit planen
+                    tage.append(current)
+                current += timedelta(days=1)
 
-def extract_bs_windows(pmu_df, films):
-    """Findet BS Start/Ende für jeden Film aus PMU."""
-    date_map = extract_date_columns(pmu_df)
-    records = []
+            if not tage:
+                st.warning(f"Für {film_name} gibt es keine Tage (alles in der Vergangenheit?).")
+                continue
 
-    for film in films:
-        used_dates = []
+            # Greedy: jeden Tag Personen durchgehen
+            t_index = 0
+            load = {}  # (person, datum) -> belegung
 
-        for row in range(1, len(pmu_df)):
-            label = str(pmu_df.iloc[row, 0])
+            while remaining > 0 and t_index < len(tage):
+                d = tage[t_index]
+                for person in personen:
+                    key = (person, d)
+                    used = load.get(key, 0)
+                    if used < max_tage_pro_tag and remaining > 0:
+                        assignments.append({
+                            "Film": film_name,
+                            "Person": person,
+                            "Datum": d,
+                            "Anteil": 1
+                        })
+                        load[key] = used + 1
+                        remaining -= 1
+                        if remaining <= 0:
+                            break
+                t_index += 1
 
-            if film.lower() in label.lower():
-                for col, date in date_map.items():
-                    cell = pmu_df.loc[row, col]
-                    if isinstance(cell, str) and cell.strip():
-                        used_dates.append(date)
-                    elif pd.notna(cell):
-                        used_dates.append(date)
+            if remaining > 0:
+                st.warning(f"⚠️ Film „{film_name}“: {remaining} Arbeitstage konnten NICHT untergebracht werden (Fenster zu klein / zu wenig Personen).")
 
-        if used_dates:
-            start = min(used_dates)
-            end = max(used_dates)
-            span = (end - start).days + 1
+        if not assignments:
+            st.error("Es konnten keine Zuteilungen erzeugt werden.")
         else:
-            start = None
-            end = None
-            span = None
+            df_assign = pd.DataFrame(assignments)
+            st.subheader("📘 Ergebnis – Zuteilungen")
+            st.dataframe(df_assign, use_container_width=True)
 
-        records.append({
-            "Film": film,
-            "BS_Start": start,
-            "BS_Ende": end,
-            "BS_Tage": span
-        })
+            # Gantt vorbereiten
+            df_gantt = df_assign.copy()
+            df_gantt["Start"] = df_gantt["Datum"]
+            df_gantt["Ende"] = df_gantt["Datum"]
 
-    return pd.DataFrame(records)
-def extract_people(mp_df):
-    """Erkennt die Personen basierend auf den ersten Zeilen."""
-    people = []
-    for i in range(10):
-        v = str(mp_df.iloc[i, 0]).strip()
-        if v.endswith(":"):
-            people.append(v[:-1])
-    return people
+            st.subheader("📊 Gantt-Diagramm")
 
+            fig = None
+            try:
+                fig = px.timeline(
+                    df_gantt,
+                    x_start="Start",
+                    x_end="Ende",
+                    y="Film",
+                    color="Person",
+                    title="Pergamon Mini-Planer – Verteilung"
+                )
+                fig.update_yaxes(autorange="reversed")
+                st.plotly_chart(fig, use_container_width=True)
+            except Exception as e:
+                st.error(f"Fehler beim Zeichnen des Gantt-Diagramms: {e}")
 
-def extract_date_columns_mp(mp_df):
-    """Erkennt Datumsspalten im MP."""
-    header = mp_df.iloc[1]
-    mapping = {}
+            # Excel-Export
+            st.subheader("📥 Export")
 
-    for col in mp_df.columns:
-        try:
-            mapping[col] = pd.to_datetime(header[col]).date()
-        except:
-            pass
+            output = df_assign.copy()
+            output["Datum"] = output["Datum"].astype(str)
+            csv_bytes = output.to_csv(index=False).encode("utf-8")
 
-    return mapping
-
-
-def build_person_calendar(mp_df, people, date_map):
-    """Erstellt Person × Datum × Status Tabelle."""
-    rows = []
-
-    first_col = mp_df.iloc[:, 0].astype(str)
-
-    person_indices = {
-        p: first_col[first_col.str.startswith(p)].index[0]
-        for p in people
-    }
-
-    for person, idx in person_indices.items():
-        row = mp_df.loc[idx]
-
-        for col, d in date_map.items():
-            cell = row[col]
-            if isinstance(cell, str) and cell.strip():
-                txt = cell.strip().lower()
-
-                if txt in ["u", "urlaub"]:
-                    status = "Urlaub"
-                    proj = "Urlaub"
-                else:
-                    status = "Blockiert"
-                    proj = cell
-            else:
-                status = "Frei"
-                proj = ""
-
-            rows.append({
-                "Person": person,
-                "Datum": d,
-                "Status": status,
-                "Projekt": proj
-            })
-
-    return pd.DataFrame(rows)
-
-
-def greedy_assign(stationen_df, calendar):
-    """Einfacher Zuteiler: Füllt BS-Fenster mit freien Tagen pro Person."""
-    assignments = []
-    rest = []
-
-    for _, st in stationen_df.iterrows():
-        film = st.Film
-        remaining = st.Arbeitstage
-        start = st.BS_Start
-        end = st.BS_Ende
-
-        if pd.isna(start) or pd.isna(end) or remaining <= 0:
-            rest.append({"Film": film, "Rest": remaining})
-            continue
-
-        current = start
-
-        while current <= end and remaining > 0:
-            freie = calendar[
-                (calendar.Datum == current) &
-                (calendar.Status == "Frei")
-            ]
-
-            for idx, row in freie.iterrows():
-                if remaining <= 0:
-                    break
-
-                assignments.append({
-                    "Film": film,
-                    "Person": row.Person,
-                    "Datum": current,
-                    "Anteil": 1
-                })
-
-                calendar.loc[idx, "Status"] = "Pergamon"
-                calendar.loc[idx, "Projekt"] = film
-
-                remaining -= 1
-
-            current += timedelta(days=1)
-
-        if remaining > 0:
-            rest.append({"Film": film, "Rest": remaining})
-
-    return pd.DataFrame(assignments), pd.DataFrame(rest)
-# ---------------------------------------------------------
-# MAIN EXECUTION LOGIC
-# ---------------------------------------------------------
-
-if pmu_file and mp_file and zb_file:
-    st.success("Alle Dateien wurden erfolgreich geladen.")
-
-    # Excel laden
-    pmu_df = pd.read_excel(pmu_file)
-    mp_df = pd.read_excel(mp_file)
-    zb_df = pd.read_excel(zb_file)
-
-    # FILME erkennen
-    films = extract_films_from_zeitbudget(zb_df)
-    st.subheader("🎬 Erkannte Filme / Stationen")
-    st.write(films)
-
-    # BS-Fenster erkennen
-    bs_df = extract_bs_windows(pmu_df, films)
-    st.subheader("📅 BS-Fenster je Film")
-    st.dataframe(bs_df, use_container_width=True)
-
-    # Arbeitstage eingeben
-    st.subheader("📏 Arbeitstage je Film (Zeitbudget)")
-    arbeitstage_df = st.data_editor(
-        pd.DataFrame({
-            "Film": films,
-            "Arbeitstage": [0] * len(films)
-        }),
-        use_container_width=True
-    )
-
-    # Personen + Datumsspalten aus MP auslesen
-    people = extract_people(mp_df)
-    date_map_mp = extract_date_columns_mp(mp_df)
-    calendar = build_person_calendar(mp_df, people, date_map_mp)
-
-    st.subheader("👥 Personen-Kalender (Auszug)")
-    st.dataframe(calendar.head(50), use_container_width=True)
-
-    # Button zum Starten der Planung
-    if st.button("🚀 Automatische Zuteilung starten"):
-        stationen = bs_df.merge(arbeitstage_df, on="Film")
-
-        assignments, rest = greedy_assign(stationen, calendar)
-
-        st.success("Zuteilung abgeschlossen!")
-
-        # Ergebnisse
-        st.subheader("📘 Zuteilungen (Ergebnis)")
-        st.dataframe(assignments, use_container_width=True)
-
-        st.subheader("⚠️ Filme mit Restarbeitstagen")
-        st.dataframe(rest, use_container_width=True)
-
-        # EXCEL EXPORT
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-            assignments.to_excel(writer, index=False, sheet_name="Zuteilungen")
-            rest.to_excel(writer, index=False, sheet_name="Rest")
-            calendar.to_excel(writer, index=False, sheet_name="Personenkalender")
-
-        st.download_button(
-            "📥 Excel-Ergebnis herunterladen",
-            data=buffer.getvalue(),
-            file_name="Pergamon_Planer_Ergebnis.xlsx"
-        )
-
-        # GANTT
-        st.subheader("📊 Gantt-Visualisierung (Zuweisung)")
-
-        if not assignments.empty:
-            gantt = assignments.copy()
-            gantt["Start"] = gantt["Datum"]
-            gantt["End"] = gantt["Datum"]
-
-            fig = px.timeline(
-                gantt,
-                x_start="Start",
-                x_end="End",
-                y="Film",
-                color="Person",
-                title="Pergamon – Automatische Zuweisung"
+            st.download_button(
+                "Zuteilungen als CSV herunterladen",
+                data=csv_bytes,
+                file_name="Pergamon_Mini_Zuteilungen.csv",
+                mime="text/csv"
             )
-
-            fig.update_yaxes(autorange="reversed")
-            st.plotly_chart(fig, use_container_width=True)
-
-else:
-    st.info("Bitte alle drei Dateien hochladen, um zu beginnen.")
