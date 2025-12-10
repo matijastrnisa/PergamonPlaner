@@ -206,13 +206,11 @@ if st.button("🚀 Planung berechnen"):
             st.subheader("📘 Ergebnis – Zuteilungen")
             st.dataframe(df_assign, use_container_width=True)
 
-            # Gantt
-            st.subheader("📊 Gantt-Diagramm")
-            df_gantt = df_assign.copy()
+            # Gantt-Diagramm
+st.subheader("📊 Gantt-Diagramm")
 
-# Sicherstellen, dass Datum wirklich datetime ist
+df_gantt = df_assign.copy()
 df_gantt["Start"] = pd.to_datetime(df_gantt["Datum"])
-# Gib dem Balken eine Länge von 1 Tag, sonst sieht man fast nichts
 df_gantt["Ende"] = df_gantt["Start"] + pd.to_timedelta(1, unit="D")
 
 try:
@@ -229,12 +227,19 @@ try:
 except Exception as e:
     st.error(f"Fehler beim Erzeugen des Gantt-Diagramms: {e}")
 
+# Export
+st.subheader("📥 Export")
 
-            # CSV-Export
-            st.subheader("📥 Export")
-            out = df_assign.copy()
-            out["Datum"] = out["Datum"].astype(str)
-            csv_bytes = out.to_csv(index=False).encode("utf-8")
+out = df_assign.copy()
+out["Datum"] = out["Datum"].astype(str)
+csv_bytes = out.to_csv(index=False).encode("utf-8")
+
+st.download_button(
+    "Zuteilungen als CSV herunterladen",
+    data=csv_bytes,
+    file_name="Pergamon_MultiRole_Zuteilungen.csv",
+    mime="text/csv"
+)
 
             st.download_button(
                 "Zuteilungen als CSV herunterladen",
