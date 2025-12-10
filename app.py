@@ -218,6 +218,9 @@ if st.button("🚀 Planung berechnen"):
         else:
             df_assign = pd.DataFrame(assignments)
 
+            # zusätzliche Spalte für Gantt: Film + Rolle
+            df_assign["Film_Rolle"] = df_assign["Film"] + " – " + df_assign["Rolle"]
+
             # Ergebnis-Tabelle
             st.subheader("📘 Ergebnis – Zuteilungen")
             st.dataframe(df_assign, use_container_width=True)
@@ -236,7 +239,7 @@ if st.button("🚀 Planung berechnen"):
                     df_gantt,
                     x_start="Start",
                     x_end="Ende",
-                    y="Film",
+                    y="Film_Rolle",  # Film + Rolle als eigene Zeile
                     color="Person",
                     title="Pergamon Mini-Planer – Verteilung nach Film/Rolle"
                 )
