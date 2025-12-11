@@ -10,405 +10,287 @@ from openpyxl import load_workbook
 st.set_page_config(page_title="Pergamon Mini-Planer", layout="wide")
 st.title("🕌 Pergamon Mini-Planer – Rollen, Personen, MP-Farben & Feiertage")
 
-st.markdown("""
-Diese Version erlaubt dir:
+today = date.today()
 
-- Personen zu definieren und ihnen Rollen zuzuweisen  
-- Filme mit BS-Fenster zu definieren  
-- Pro Film für **jede Rolle** unterschiedliche Arbeitstage einzutragen  
-- `MP.xlsx` hochzuladen (interner Kalender mit Farblegende)  
-- Die App wertet die **Farben** im MP aus (Farbbalken = blockiert)  
-- Es wird **nicht** geplant:
-  - an Wochenenden (Samstag, Sonntag)  
-  - an gesetzlichen Feiertagen in **Berlin** (2025 & 2026)  
+st.markdown("""
+Diese Version berücksichtigt:
+- Personen & ihre Rollen  
+- Multi-Rollen-Aufwand pro Film  
+- BS-Start/Ende  
+- MP-Kalender (Farbbalken → Person blockiert)  
+- **Keine Wochenenden**  
+- **Berliner Feiertage 2025/2026**  
 """)
 
-today = date.today()
 
 # ---------------------------------------------------------
 # FEIERTAGE BERLIN 2025/2026
 # ---------------------------------------------------------
-
 BERLIN_HOLIDAYS = {
     2025: {
-        date(2025, 1, 1),   # Neujahr
-        date(2025, 3, 8),   # Frauentag
-        date(2025, 4, 18),  # Karfreitag
-        date(2025, 4, 21),  # Ostermontag
-        date(2025, 5, 1),   # Tag der Arbeit
-        date(2025, 5, 8),   # 80 Jahre Ende 2. WK (einmalig)
-        date(2025, 5, 29),  # Christi Himmelfahrt
-        date(2025, 6, 9),   # Pfingstmontag
-        date(2025, 10, 3),  # Tag der Deutschen Einheit
-        date(2025, 12, 25), # 1. Weihnachtstag
-        date(2025, 12, 26), # 2. Weihnachtstag
+        date(2025, 1, 1),
+        date(2025, 3, 8),
+        date(2025, 4, 18),
+        date(2025, 4, 21),
+        date(2025, 5, 1),
+        date(2025, 5, 8),
+        date(2025, 5, 29),
+        date(2025, 6, 9),
+        date(2025, 10, 3),
+        date(2025, 12, 25),
+        date(2025, 12, 26)
     },
     2026: {
-        date(2026, 1, 1),   # Neujahr
-        date(2026, 3, 8),   # Frauentag
-        date(2026, 4, 3),   # Karfreitag
-        date(2026, 4, 6),   # Ostermontag
-        date(2026, 5, 1),   # Tag der Arbeit
-        date(2026, 5, 14),  # Christi Himmelfahrt
-        date(2026, 5, 25),  # Pfingstmontag
-        date(2026, 10, 3),  # Tag der Deutschen Einheit
-        date(2026, 12, 25), # 1. Weihnachtstag
-        date(2026, 12, 26), # 2. Weihnachtstag
+        date(2026, 1, 1),
+        date(2026, 3, 8),
+        date(2026, 4, 3),
+        date(2026, 4, 6),
+        date(2026, 5, 1),
+        date(2026, 5, 14),
+        date(2026, 5, 25),
+        date(2026, 10, 3),
+        date(2026, 12, 25),
+        date(2026, 12, 26)
     }
 }
 
 def is_berlin_holiday(d: date) -> bool:
-    """True, wenn d ein Berliner Feiertag (2025/2026) ist."""
     return d in BERLIN_HOLIDAYS.get(d.year, set())
 
-# ---------------------------------------------------------
-# HELFER: MP-KALENDER PER FARBE EINLESEN
-# ---------------------------------------------------------
-def load_mp_availability_by_color(mp_file, personen: list[str]):
-    """
-    Liest MP.xlsx mit openpyxl ein und liefert:
-        availability[(Person, Datum)] = "Blockiert"
-    Alle anderen Tage gelten als "Frei".
 
-    Logik:
-    - Datumszeile = die Zeile mit den meisten datetime-Werten (ab Spalte 2)
-    - Personen-Legende:
-        in Spalte A (1) stehen Namen wie "Anna:", "Mareike:", ...
-        in Spalte B (2) ist die jeweilige Farbe als Farbfeld
-        -> diese Farbe ist die Person-Farbe
-    - Im Kalender:
-        für jede Datumsspalte und jede Zeile:
-            wenn Zellenfüllung == Personenfarbe -> Person an diesem Datum blockiert
-    """
+# ---------------------------------------------------------
+# MP-KALENDER PER FARBE EINLESEN
+# ---------------------------------------------------------
+def load_mp_availability_by_color(mp_file, personen):
     wb = load_workbook(mp_file, data_only=True)
     ws = wb.active
 
     max_row = ws.max_row
     max_col = ws.max_column
 
-    # 1) Datumszeile finden
+    # Datumszeile finden
     date_row_idx = None
-    max_dates = -1
+    best_count = -1
     for r in range(1, max_row + 1):
-        count = 0
+        c_count = 0
         for c in range(2, max_col + 1):
-            v = ws.cell(row=r, column=c).value
-            if isinstance(v, datetime):
-                count += 1
-        if count > max_dates:
-            max_dates = count
+            if isinstance(ws.cell(row=r, column=c).value, datetime):
+                c_count += 1
+        if c_count > best_count:
+            best_count = c_count
             date_row_idx = r
 
-    if date_row_idx is None or max_dates <= 0:
+    if date_row_idx is None:
         return {}
 
-    # 2) Spalten -> Datum
     date_cols = {}
     for c in range(2, max_col + 1):
         v = ws.cell(row=date_row_idx, column=c).value
         if isinstance(v, datetime):
             date_cols[c] = v.date()
 
-    # 3) Personenfarben aus der Legende (Spalte A + Farbfeld in Spalte B)
-    def norm_name(s: str) -> str:
+    def norm(s):
         return s.split(":")[0].strip().lower()
 
     person_colors = {}
-    for r in range(1, 20):  # Legende ist oben irgendwo, z.B. Zeilen 1–10
-        cell_name = ws.cell(row=r, column=1).value
-        if not isinstance(cell_name, str):
-            continue
-        base = norm_name(cell_name)
-        for p in personen:
-            if base == p.strip().lower():
-                fill = ws.cell(row=r, column=2).fill
-                col = None
-                if fill and fill.fgColor and fill.fgColor.type != "indexed":
-                    col = fill.fgColor.rgb
-                person_colors[p] = col
+    for r in range(1, 25):
+        raw = ws.cell(row=r, column=1).value
+        if isinstance(raw, str):
+            nm = norm(raw)
+            for p in personen:
+                if nm == p.lower():
+                    fill = ws.cell(row=r, column=2).fill
+                    if fill and fill.fgColor and fill.fgColor.type != "indexed":
+                        person_colors[p] = fill.fgColor.rgb
 
-    # 4) Verfügbarkeit per Farbe bestimmen
     availability = {}
 
-    # Wir gehen alle Datumsspalten und alle Zeilen durch
     for c, d in date_cols.items():
         for r in range(1, max_row + 1):
             cell = ws.cell(row=r, column=c)
             fill = cell.fill
-            col = None
+            rgb = None
             if fill and fill.fgColor and fill.fgColor.type != "indexed":
-                col = fill.fgColor.rgb
+                rgb = fill.fgColor.rgb
 
-            if not col or col == "00000000":
-                continue  # keine relevante Farbe
+            if not rgb:
+                continue
 
-            # Prüfen, ob diese Farbe zu einer Person gehört
-            for person, p_color in person_colors.items():
-                if p_color and col == p_color:
-                    availability[(person, d)] = "Blockiert"
+            for p, pc in person_colors.items():
+                if pc == rgb:
+                    availability[(p, d)] = "Blockiert"
 
     return availability
 
 
 # ---------------------------------------------------------
-# 1️⃣ PERSONEN & ROLLEN DEFINIEREN
+# 1) PERSONEN & ROLLEN
 # ---------------------------------------------------------
 st.subheader("1️⃣ Personen & Rollen")
 
-default_personen = "Anna, Mareike, Sonja, Sophia"
-personen_input = st.text_input(
-    "Personen (Komma-getrennt)",
-    value=default_personen
-)
+personen_input = st.text_input("Personen (Komma)", "Anna, Mareike, Sonja, Sophia")
 personen = [p.strip() for p in personen_input.split(",") if p.strip()]
 
-if not personen:
-    st.warning("Bitte mindestens eine Person eintragen.")
-
-default_roles = ["Storyboard", "Keyframes", "Animation"]
-rollen_input = st.text_input(
-    "Rollen (Komma-getrennt)",
-    value=", ".join(default_roles)
-)
+rollen_input = st.text_input("Rollen (Komma)", "Storyboard, Keyframes, Animation")
 rollen = [r.strip() for r in rollen_input.split(",") if r.strip()]
 
-if not rollen:
-    st.warning("Bitte mindestens eine Rolle eintragen.")
-
-st.markdown("#### Rollen pro Person")
-
 person_roles = {}
-for person in personen:
-    person_roles[person] = st.multiselect(
-        f"Rollen für **{person}**",
-        options=rollen,
-        default=rollen,  # standard: alle können alles, du kannst abwählen
-        key=f"roles_{person}"
+for p in personen:
+    person_roles[p] = st.multiselect(
+        f"Rollen von {p}",
+        rollen,
+        default=rollen
     )
 
-# ---------------------------------------------------------
-# 2️⃣ MP-KALENDER HOCHLADEN (FARBEN)
-# ---------------------------------------------------------
-st.subheader("2️⃣ MP-Kalender mit Farblegende (optional)")
 
-mp_file = st.file_uploader(
-    "MP.xlsx hochladen (interner Kalender mit farbigen Balken für Personen)",
-    type=["xlsx"]
-)
+# ---------------------------------------------------------
+# 2) MP FILE
+# ---------------------------------------------------------
+st.subheader("2️⃣ MP-Kalender hochladen")
+mp_file = st.file_uploader("MP.xlsx", type=["xlsx"])
 
-mp_availability = None
-if mp_file is not None:
+mp_availability = {}
+if mp_file:
     try:
         mp_availability = load_mp_availability_by_color(mp_file, personen)
-        st.success("MP.xlsx geladen. Verfügbarkeit anhand der Farben erkannt.")
-        st.caption(
-            "Für jede Person werden alle Tage blockiert, an denen ihre Farbe im Kalender vorkommt. "
-            "Nur Tage ohne ihre Farbe gelten als frei."
-        )
+        st.success("MP-Farben erfolgreich erkannt.")
     except Exception as e:
-        st.error(f"Fehler beim Einlesen von MP.xlsx: {e}")
-        mp_availability = None
+        st.error(f"Fehler beim MP-Parsing: {e}")
+
 
 # ---------------------------------------------------------
-# 3️⃣ FILME DEFINIEREN
+# 3) FILME
 # ---------------------------------------------------------
 st.subheader("3️⃣ Filme definieren")
 
-num_films = st.number_input(
-    "Wie viele Filme möchtest du testen?",
-    min_value=1,
-    max_value=5,
-    value=2,
-    step=1
-)
-
+anz = st.number_input("Wie viele Filme?", 1, 5, 2)
 filme = []
 
-for i in range(num_films):
+for i in range(anz):
     st.markdown(f"**Film {i+1}**")
     col1, col2, col3 = st.columns(3)
 
-    with col1:
-        name = st.text_input(
-            f"Name Film {i+1}",
-            value=f"Film {i+1}",
-            key=f"film_name_{i}"
-        )
-    with col2:
-        bs_start = st.date_input(
-            f"BS-Start {i+1}",
-            value=today + timedelta(days=7),
-            key=f"bs_start_{i}"
-        )
-    with col3:
-        bs_ende = st.date_input(
-            f"BS-Ende {i+1}",
-            value=today + timedelta(days=37),
-            key=f"bs_ende_{i}"
-        )
+    name = col1.text_input(f"Name {i+1}", f"Film {i+1}")
+    bs_start = col2.date_input(f"BS-Start {i+1}", today + timedelta(days=5))
+    bs_end = col3.date_input(f"BS-Ende {i+1}", today + timedelta(days=25))
 
-    if bs_ende < bs_start:
-        st.error(f"Film {i+1}: BS-Ende darf nicht vor BS-Start liegen.")
-
-    st.markdown(f"_Arbeitstage je Rolle für **{name}**:_")
     role_days = {}
-    if rollen:
-        cols = st.columns(len(rollen))
-        for j, rolle in enumerate(rollen):
-            with cols[j]:
-                tage = st.number_input(
-                    f"{rolle}",
-                    min_value=0,
-                    max_value=365,
-                    value=0,
-                    step=1,
-                    key=f"film_{i}_role_{rolle}"
-                )
-                role_days[rolle] = tage
-    else:
-        role_days = {}
+    cols = st.columns(len(rollen))
+    for j, r in enumerate(rollen):
+        role_days[r] = cols[j].number_input(
+            f"{r} (Tage)",
+            min_value=0,
+            max_value=200,
+            value=0,
+            key=f"{i}_{r}"
+        )
 
     filme.append({
         "Film": name,
         "BS_Start": bs_start,
-        "BS_Ende": bs_ende,
+        "BS_Ende": bs_end,
         "Role_Days": role_days
     })
 
-# ---------------------------------------------------------
-# 4️⃣ PLANUNGS-PARAMETER
-# ---------------------------------------------------------
-st.subheader("4️⃣ Planungs-Parameter")
-
-max_tage_pro_tag = st.number_input(
-    "Max. Einheiten pro Person und Tag (über alle Filme/Rollen)",
-    min_value=1,
-    max_value=3,
-    value=1
-)
-
-st.markdown("""
-- Es wird **nicht in der Vergangenheit** geplant (nur ab heute).  
-- Es wird **nicht** an Wochenenden (Sa/So) geplant.  
-- Es wird **nicht** an Berliner Feiertagen (2025/2026) geplant.  
-""")
 
 # ---------------------------------------------------------
-# 5️⃣ PLANUNG STARTEN
+# 4) PARAMETER
 # ---------------------------------------------------------
-st.subheader("5️⃣ Planung ausführen")
+st.subheader("4️⃣ Parameter")
+max_per_day = st.number_input("Max. Einheiten pro Person pro Tag", 1, 3, 1)
 
-if st.button("🚀 Planung berechnen"):
-    if not personen:
-        st.error("Keine Personen definiert.")
-    elif not rollen:
-        st.error("Keine Rollen definiert.")
-    else:
-        assignments = []
 
-        for film in filme:
-            film_name = film["Film"]
-            start = film["BS_Start"]
-            ende = film["BS_Ende"]
-            role_days = film["Role_Days"]
+# ---------------------------------------------------------
+# 5) PLANUNG
+# ---------------------------------------------------------
+st.subheader("5️⃣ Planung")
 
-            # gültige Tage im BS-Fenster:
-            tage = []
-            current = start
-            while current <= ende:
-                if current >= today:
-                    is_weekend = current.weekday() >= 5  # 5=Sa, 6=So
-                    is_holiday = is_berlin_holiday(current)
+if st.button("🚀 Start"):
+    assignments = []
 
-                    if (not is_weekend) and (not is_holiday):
-                        tage.append(current)
+    for film in filme:
+        name = film["Film"]
+        start = film["BS_Start"]
+        end = film["BS_Ende"]
+        rdays = film["Role_Days"]
 
-                current += timedelta(days=1)
+        # gültige Tage filtern:
+        valid_days = []
+        cur = start
+        while cur <= end:
+            if cur >= today:
+                if cur.weekday() < 5:  # Mo-Fr
+                    if not is_berlin_holiday(cur):
+                        valid_days.append(cur)
+            cur += timedelta(days=1)
 
-            if not tage:
-                st.warning(f"⚠️ Film „{film_name}“: keine planbaren Tage (alles Wochenende / Feiertag / Vergangenheit?).")
+        for rolle, needed in rdays.items():
+            remaining = int(needed)
+            if remaining <= 0:
                 continue
 
-            # pro Rolle planen
-            for rolle, needed_days in role_days.items():
-                remaining = int(needed_days)
-                if remaining <= 0:
-                    continue
+            candidates = [p for p in personen if rolle in person_roles[p]]
 
-                # Personen, die diese Rolle können
-                passende_personen = [
-                    p for p in personen
-                    if rolle in person_roles.get(p, [])
-                ]
+            if not candidates:
+                st.warning(f"{name}: Niemand kann {rolle}")
+                continue
 
-                if not passende_personen:
-                    st.warning(
-                        f"⚠️ Film „{film_name}“: keine Person hat die Rolle „{rolle}“."
-                    )
-                    continue
+            load = {}
+            idx = 0
 
-                # Greedy: über Tage iterieren
-                t_index = 0
-                load = {}  # (person, datum) -> belegte Einheiten
+            while remaining > 0 and idx < len(valid_days):
+                d = valid_days[idx]
+                for p in candidates:
 
-                while remaining > 0 and t_index < len(tage):
-                    d = tage[t_index]
-                    for person in passende_personen:
-                        # MP-Verfügbarkeit prüfen (falls vorhanden)
-                        if mp_availability is not None:
-                            status = mp_availability.get((person, d), "Frei")
-                            if status != "Frei":
-                                continue  # Person an diesem Tag blockiert
+                    # MP check
+                    if mp_availability.get((p, d)) == "Blockiert":
+                        continue
 
-                        key = (person, d)
-                        used = load.get(key, 0)
-                        if used < max_tage_pro_tag and remaining > 0:
-                            assignments.append({
-                                "Film": film_name,
-                                "Rolle": rolle,
-                                "Person": person,
-                                "Datum": d,
-                                "Anteil": 1
-                            })
-                            load[key] = used + 1
-                            remaining -= 1
-                            if remaining <= 0:
-                                break
-                    t_index += 1
+                    used = load.get((p, d), 0)
+                    if used < max_per_day:
+                        assignments.append({
+                            "Film": name,
+                            "Rolle": rolle,
+                            "Person": p,
+                            "Datum": d,
+                            "Anteil": 1
+                        })
+                        load[(p, d)] = used + 1
+                        remaining -= 1
+                        if remaining <= 0:
+                            break
+                idx += 1
 
-                if remaining > 0:
-                    st.warning(
-                        f"⚠️ Film „{film_name}“ / Rolle „{rolle}“: {remaining} Tage konnten nicht untergebracht werden."
-                    )
+            if remaining > 0:
+                st.warning(f"{name} / {rolle}: {remaining} unzugeordnet.")
 
-        if not assignments:
-            st.error("Es konnten keine Zuteilungen erzeugt werden.")
-        else:
-            df_assign = pd.DataFrame(assignments)
+    if not assignments:
+        st.error("Nichts zuzuordnen.")
+    else:
+        df = pd.DataFrame(assignments)
+        df["Film_Rolle"] = df["Film"] + " – " + df["Rolle"]
 
-            # zusätzliche Spalte für Gantt: Film + Rolle
-            df_assign["Film_Rolle"] = df_assign["Film"] + " – " + df_assign["Rolle"]
+        st.subheader("📘 Ergebnis")
+        st.dataframe(df, use_container_width=True)
 
-            # Ergebnis-Tabelle
-            st.subheader("📘 Ergebnis – Zuteilungen")
-            st.dataframe(df_assign, use_container_width=True)
+        # GANTT
+        st.subheader("📊 Gantt")
 
-            # -------------------------------------------------
-            # GANTT-DIAGRAMM
-            # -------------------------------------------------
-            st.subheader("📊 Gantt-Diagramm")
+        df_g = df.copy()
+        df_g["Start"] = pd.to_datetime(df_g["Datum"])
+        df_g["Ende"] = df_g["Start"] + pd.to_timedelta(1, "D")
 
-            df_gantt = df_assign.copy()
-            df_gantt["Start"] = pd.to_datetime(df_gantt["Datum"])
-            df_gantt["Ende"] = df_gantt["Start"] + pd.to_timedelta(1, unit="D")
+        fig = px.timeline(
+            df_g,
+            x_start="Start",
+            x_end="Ende",
+            y="Film_Rolle",
+            color="Person",
+            title="Pergamon – Planung"
+        )
+        fig.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig, use_container_width=True)
 
-            try:
-                fig = px.timeline(
-                    df_gantt,
-                    x_start="Start",
-                    x_end="Ende",
-                    y="Film_Rolle",  # Film + Rolle als eigene Zeile
-                    color="Person",
-                    title="Pergamon Mini-Planer – Verteilung nach Film/Rolle"
-                )
-            ```
+        # EXPORT
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button("CSV herunterladen", csv, "planung.csv")
