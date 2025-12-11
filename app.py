@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import date, timedelta, datetime
 import plotly.express as px
 from openpyxl import load_workbook
-import holidays  # für gesetzliche Feiertage
 
 # ---------------------------------------------------------
 # PAGE CONFIG
@@ -18,22 +17,49 @@ Diese Version erlaubt dir:
 - Filme mit BS-Fenster zu definieren  
 - Pro Film für **jede Rolle** unterschiedliche Arbeitstage einzutragen  
 - `MP.xlsx` hochzuladen (interner Kalender mit Farblegende)  
-- Die App wertet die **Farben** im MP aus:
-  - Links oben steht eine Legende: Name + Farbfläche  
-  - Überall, wo diese Farbe im Kalender vorkommt, gilt die Person als **blockiert**  
-- Zusätzlich wird **nicht** geplant:
+- Die App wertet die **Farben** im MP aus (Farbbalken = blockiert)  
+- Es wird **nicht** geplant:
   - an Wochenenden (Samstag, Sonntag)  
-  - an gesetzlichen Feiertagen in **Berlin**  
+  - an gesetzlichen Feiertagen in **Berlin** (2025 & 2026)  
 """)
 
 today = date.today()
 
-# Feiertage Berlin vorbereiten
-try:
-    berlin_holidays = holidays.country_holidays("DE", subdiv="BE")
-except Exception:
-    berlin_holidays = None  # falls das Paket aus irgendeinem Grund nicht funktioniert
+# ---------------------------------------------------------
+# FEIERTAGE BERLIN 2025/2026
+# ---------------------------------------------------------
 
+BERLIN_HOLIDAYS = {
+    2025: {
+        date(2025, 1, 1),   # Neujahr
+        date(2025, 3, 8),   # Frauentag
+        date(2025, 4, 18),  # Karfreitag
+        date(2025, 4, 21),  # Ostermontag
+        date(2025, 5, 1),   # Tag der Arbeit
+        date(2025, 5, 8),   # 80 Jahre Ende 2. WK (einmalig)
+        date(2025, 5, 29),  # Christi Himmelfahrt
+        date(2025, 6, 9),   # Pfingstmontag
+        date(2025, 10, 3),  # Tag der Deutschen Einheit
+        date(2025, 12, 25), # 1. Weihnachtstag
+        date(2025, 12, 26), # 2. Weihnachtstag
+    },
+    2026: {
+        date(2026, 1, 1),   # Neujahr
+        date(2026, 3, 8),   # Frauentag
+        date(2026, 4, 3),   # Karfreitag
+        date(2026, 4, 6),   # Ostermontag
+        date(2026, 5, 1),   # Tag der Arbeit
+        date(2026, 5, 14),  # Christi Himmelfahrt
+        date(2026, 5, 25),  # Pfingstmontag
+        date(2026, 10, 3),  # Tag der Deutschen Einheit
+        date(2026, 12, 25), # 1. Weihnachtstag
+        date(2026, 12, 26), # 2. Weihnachtstag
+    }
+}
+
+def is_berlin_holiday(d: date) -> bool:
+    """True, wenn d ein Berliner Feiertag (2025/2026) ist."""
+    return d in BERLIN_HOLIDAYS.get(d.year, set())
 
 # ---------------------------------------------------------
 # HELFER: MP-KALENDER PER FARBE EINLESEN
@@ -264,7 +290,7 @@ max_tage_pro_tag = st.number_input(
 st.markdown("""
 - Es wird **nicht in der Vergangenheit** geplant (nur ab heute).  
 - Es wird **nicht** an Wochenenden (Sa/So) geplant.  
-- Es wird **nicht** an Berliner Feiertagen geplant.
+- Es wird **nicht** an Berliner Feiertagen (2025/2026) geplant.  
 """)
 
 # ---------------------------------------------------------
@@ -287,17 +313,12 @@ if st.button("🚀 Planung berechnen"):
             role_days = film["Role_Days"]
 
             # gültige Tage im BS-Fenster:
-            # - ab heute
-            # - kein Wochenende
-            # - kein Berliner Feiertag
             tage = []
             current = start
             while current <= ende:
                 if current >= today:
                     is_weekend = current.weekday() >= 5  # 5=Sa, 6=So
-                    is_holiday = False
-                    if berlin_holidays is not None:
-                        is_holiday = current in berlin_holidays
+                    is_holiday = is_berlin_holiday(current)
 
                     if (not is_weekend) and (not is_holiday):
                         tage.append(current)
@@ -390,23 +411,4 @@ if st.button("🚀 Planung berechnen"):
                     color="Person",
                     title="Pergamon Mini-Planer – Verteilung nach Film/Rolle"
                 )
-                fig.update_yaxes(autorange="reversed")
-                st.plotly_chart(fig, use_container_width=True)
-            except Exception as e:
-                st.error(f"Fehler beim Erzeugen des Gantt-Diagramms: {e}")
-
-            # -------------------------------------------------
-            # EXPORT
-            # -------------------------------------------------
-            st.subheader("📥 Export")
-
-            out = df_assign.copy()
-            out["Datum"] = out["Datum"].astype(str)
-            csv_bytes = out.to_csv(index=False).encode("utf-8")
-
-            st.download_button(
-                "Zuteilungen als CSV herunterladen",
-                data=csv_bytes,
-                file_name="Pergamon_MultiRole_Mit_MP_Farben_und_Feiertagen.csv",
-                mime="text/csv"
-            )
+            ```
