@@ -7,7 +7,7 @@ import plotly.express as px
 # PAGE CONFIG
 # ---------------------------------------------------------
 st.set_page_config(page_title="Pergamon Mini-Planer", layout="wide")
-st.title("🕌 Pergamon Mini-Planer – Rollen & Personen (Multi-Rolle pro Film)")
+st.title("🕌 Pergamon Mini-Planer – Rollen, Personen & MP-Kalender")
 
 st.markdown("""
 Diese Version erlaubt dir:
@@ -15,10 +15,87 @@ Diese Version erlaubt dir:
 - Personen zu definieren und ihnen Rollen zuzuweisen  
 - Filme mit BS-Fenster zu definieren  
 - Pro Film für **jede Rolle** unterschiedliche Arbeitstage einzutragen  
-- Die App verteilt dann pro Film & Rolle die Tage auf passende Personen  
+- Optional `MP.xlsx` hochzuladen (interner Kalender)  
+- Die App verteilt pro Film & Rolle Tage nur auf Personen, die:
+  - die Rolle können **und**
+  - laut MP an diesem Tag **frei** sind  
 """)
 
 today = date.today()
+
+# ---------------------------------------------------------
+# HELFERFUNKTION: MP-KALENDER EINLESEN
+# ---------------------------------------------------------
+def load_mp_availability(mp_df: pd.DataFrame, personen: list[str]):
+    """
+    Liest den MP-Kalender ein und liefert ein Dict:
+        (Person, Datum) -> "Frei" oder "Blockiert"
+    Annahmen:
+    - Datumszeile: die Zeile mit den meisten Timestamp-Werten
+    - Personen: stehen in Spalte 0, z.B. "Anna:", "Mareike:", "Sonja"
+    - Zellen:
+        - "u" / "urlaub" (egal ob groß/klein) -> Blockiert (Urlaub)
+        - andere nicht-leere Strings -> Blockiert (anderes Projekt)
+        - leer / NaN -> Frei
+    """
+    nrows, ncols = mp_df.shape
+
+    # 1) Datumszeile finden (Zeile mit den meisten Timestamp-Werten)
+    date_row_idx = None
+    max_count = -1
+    for i in range(nrows):
+        row = mp_df.iloc[i, 1:]  # erste Spalte ist Name/Legende
+        count = sum(isinstance(v, pd.Timestamp) for v in row)
+        if count > max_count:
+            max_count = count
+            date_row_idx = i
+
+    if date_row_idx is None or max_count <= 0:
+        return {}
+
+    # 2) Spalten -> Datum
+    date_cols: dict = {}
+    for col in mp_df.columns[1:]:
+        v = mp_df.loc[date_row_idx, col]
+        if isinstance(v, pd.Timestamp):
+            date_cols[col] = v.date()
+
+    # 3) Personen-Zeilen finden
+    name_col = mp_df.iloc[:, 0].astype(str)
+
+    def norm_name(s: str) -> str:
+        return s.split(":")[0].strip().lower()
+
+    person_rows: dict = {}
+    for person in personen:
+        base = norm_name(person)
+        hits = name_col[name_col.apply(lambda x: norm_name(x) == base)]
+        if not hits.empty:
+            person_rows[person] = hits.index[0]
+
+    availability: dict = {}
+    for person, ridx in person_rows.items():
+        for col, d in date_cols.items():
+            cell = mp_df.loc[ridx, col]
+            status = "Frei"
+
+            if isinstance(cell, str):
+                txt = cell.strip().lower()
+                if txt == "":
+                    status = "Frei"
+                elif txt in ("u", "urlaub"):
+                    status = "Blockiert"
+                else:
+                    status = "Blockiert"
+            else:
+                if pd.isna(cell):
+                    status = "Frei"
+                else:
+                    status = "Blockiert"
+
+            availability[(person, d)] = status
+
+    return availability
 
 # ---------------------------------------------------------
 # 1️⃣ PERSONEN & ROLLEN DEFINIEREN
@@ -57,9 +134,33 @@ for person in personen:
     )
 
 # ---------------------------------------------------------
-# 2️⃣ FILME DEFINIEREN
+# 2️⃣ MP-KALENDER HOCHLADEN (OPTIONAL)
 # ---------------------------------------------------------
-st.subheader("2️⃣ Filme definieren")
+st.subheader("2️⃣ MP-Kalender (optional)")
+
+mp_file = st.file_uploader(
+    "MP.xlsx hochladen (interner Kalender mit Urlaub / anderen Projekten)",
+    type=["xlsx"]
+)
+
+mp_availability = None
+if mp_file is not None:
+    try:
+        mp_df = pd.read_excel(mp_file)
+        mp_availability = load_mp_availability(mp_df, personen)
+        st.success("MP.xlsx geladen und Verfügbarkeiten erkannt.")
+        st.caption(
+            "Tage, an denen eine Person im MP-Kalender Einträge (Urlaub/Projekte) hat, "
+            "werden als blockiert behandelt. Nur 'leere' Zellen gelten als frei."
+        )
+    except Exception as e:
+        st.error(f"Fehler beim Einlesen von MP.xlsx: {e}")
+        mp_availability = None
+
+# ---------------------------------------------------------
+# 3️⃣ FILME DEFINIEREN
+# ---------------------------------------------------------
+st.subheader("3️⃣ Filme definieren")
 
 num_films = st.number_input(
     "Wie viele Filme möchtest du testen?",
@@ -123,9 +224,9 @@ for i in range(num_films):
     })
 
 # ---------------------------------------------------------
-# 3️⃣ PLANUNGS-PARAMETER
+# 4️⃣ PLANUNGS-PARAMETER
 # ---------------------------------------------------------
-st.subheader("3️⃣ Planungs-Parameter")
+st.subheader("4️⃣ Planungs-Parameter")
 
 max_tage_pro_tag = st.number_input(
     "Max. Einheiten pro Person und Tag (über alle Filme/Rollen)",
@@ -137,9 +238,9 @@ max_tage_pro_tag = st.number_input(
 st.markdown("_Hinweis: Es wird **nicht in der Vergangenheit** geplant (nur ab heute)._")
 
 # ---------------------------------------------------------
-# 4️⃣ PLANUNG STARTEN
+# 5️⃣ PLANUNG STARTEN
 # ---------------------------------------------------------
-st.subheader("4️⃣ Planung ausführen")
+st.subheader("5️⃣ Planung ausführen")
 
 if st.button("🚀 Planung berechnen"):
     if not personen:
@@ -192,6 +293,12 @@ if st.button("🚀 Planung berechnen"):
                 while remaining > 0 and t_index < len(tage):
                     d = tage[t_index]
                     for person in passende_personen:
+                        # MP-Verfügbarkeit prüfen (falls vorhanden)
+                        if mp_availability is not None:
+                            status = mp_availability.get((person, d), "Frei")
+                            if status != "Frei":
+                                continue  # Person an diesem Tag blockiert
+
                         key = (person, d)
                         used = load.get(key, 0)
                         if used < max_tage_pro_tag and remaining > 0:
@@ -260,6 +367,6 @@ if st.button("🚀 Planung berechnen"):
             st.download_button(
                 "Zuteilungen als CSV herunterladen",
                 data=csv_bytes,
-                file_name="Pergamon_MultiRole_Zuteilungen.csv",
+                file_name="Pergamon_MultiRole_Mit_MP_Zuteilungen.csv",
                 mime="text/csv"
             )
