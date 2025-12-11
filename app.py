@@ -128,10 +128,18 @@ def load_mp_availability_by_color(mp_file, personen):
 # ---------------------------------------------------------
 st.subheader("1️⃣ Personen & Rollen")
 
-personen_input = st.text_input("Personen (Komma)", "Anna, Mareike, Sonja, Sophia")
+# neue Default-Personen
+personen_input = st.text_input(
+    "Personen (Komma)",
+    "Sonja, Mareike, Sophia, Ruta, Xenia, Anna"
+)
 personen = [p.strip() for p in personen_input.split(",") if p.strip()]
 
-rollen_input = st.text_input("Rollen (Komma)", "Storyboard, Keyframes, Animation")
+# neue Default-Rollen (inkl. Lead)
+rollen_input = st.text_input(
+    "Rollen (Komma)",
+    "Storyboard, Keyframes, Animation, Lead"
+)
 rollen = [r.strip() for r in rollen_input.split(",") if r.strip()]
 
 person_roles = {}
@@ -163,7 +171,8 @@ if mp_file:
 # ---------------------------------------------------------
 st.subheader("3️⃣ Filme definieren")
 
-anz = st.number_input("Wie viele Filme?", 1, 5, 2)
+# bis zu 20 Filme, Default = 20
+anz = st.number_input("Wie viele Filme?", 1, 20, 20)
 filme = []
 
 for i in range(anz):
