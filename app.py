@@ -1,13 +1,14 @@
 import streamlit as st
 import pandas as pd
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 import plotly.express as px
+from openpyxl import load_workbook
 
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
 st.set_page_config(page_title="Pergamon Mini-Planer", layout="wide")
-st.title("🕌 Pergamon Mini-Planer – Rollen, Personen & MP-Kalender")
+st.title("🕌 Pergamon Mini-Planer – Rollen, Personen & MP-Farben")
 
 st.markdown("""
 Diese Version erlaubt dir:
@@ -15,85 +16,101 @@ Diese Version erlaubt dir:
 - Personen zu definieren und ihnen Rollen zuzuweisen  
 - Filme mit BS-Fenster zu definieren  
 - Pro Film für **jede Rolle** unterschiedliche Arbeitstage einzutragen  
-- Optional `MP.xlsx` hochzuladen (interner Kalender)  
-- Die App verteilt pro Film & Rolle Tage nur auf Personen, die:
-  - die Rolle können **und**
-  - laut MP an diesem Tag **frei** sind  
+- `MP.xlsx` hochzuladen (interner Kalender mit Farblegende)  
+- Die App wertet die **Farben** im MP aus:
+
+  - Links oben steht eine Legende: Name + Farbfläche  
+  - Überall, wo diese Farbe im Kalender vorkommt, gilt die Person als **blockiert**  
+  - Nur Tage **ohne** ihre Farbe gelten als **frei**  
 """)
 
 today = date.today()
 
 # ---------------------------------------------------------
-# HELFERFUNKTION: MP-KALENDER EINLESEN
+# HELFER: MP-KALENDER PER FARBE EINLESEN
 # ---------------------------------------------------------
-def load_mp_availability(mp_df: pd.DataFrame, personen: list[str]):
+def load_mp_availability_by_color(mp_file, personen: list[str]):
     """
-    Liest den MP-Kalender ein und liefert ein Dict:
-        (Person, Datum) -> "Frei" oder "Blockiert"
-    Annahmen:
-    - Datumszeile: die Zeile mit den meisten Timestamp-Werten
-    - Personen: stehen in Spalte 0, z.B. "Anna:", "Mareike:", "Sonja"
-    - Zellen:
-        - "u" / "urlaub" (egal ob groß/klein) -> Blockiert (Urlaub)
-        - andere nicht-leere Strings -> Blockiert (anderes Projekt)
-        - leer / NaN -> Frei
-    """
-    nrows, ncols = mp_df.shape
+    Liest MP.xlsx mit openpyxl ein und liefert:
+        availability[(Person, Datum)] = "Blockiert"
+    Alle anderen Tage gelten als "Frei".
 
-    # 1) Datumszeile finden (Zeile mit den meisten Timestamp-Werten)
+    Logik:
+    - Datumszeile = die Zeile mit den meisten datetime-Werten (ab Spalte 2)
+    - Personen-Legende:
+        in Spalte A (1) stehen Namen wie "Anna:", "Mareike:", ...
+        in Spalte B (2) ist die jeweilige Farbe als Farbfeld
+        -> diese Farbe ist die Person-Farbe
+    - Im Kalender:
+        für jede Datumsspalte und jede Zeile:
+            wenn Zellenfüllung == Personenfarbe -> Person an diesem Datum blockiert
+    """
+    wb = load_workbook(mp_file, data_only=True)
+    ws = wb.active
+
+    max_row = ws.max_row
+    max_col = ws.max_column
+
+    # 1) Datumszeile finden
     date_row_idx = None
-    max_count = -1
-    for i in range(nrows):
-        row = mp_df.iloc[i, 1:]  # erste Spalte ist Name/Legende
-        count = sum(isinstance(v, pd.Timestamp) for v in row)
-        if count > max_count:
-            max_count = count
-            date_row_idx = i
+    max_dates = -1
+    for r in range(1, max_row + 1):
+        count = 0
+        for c in range(2, max_col + 1):
+            v = ws.cell(row=r, column=c).value
+            if isinstance(v, datetime):
+                count += 1
+        if count > max_dates:
+            max_dates = count
+            date_row_idx = r
 
-    if date_row_idx is None or max_count <= 0:
+    if date_row_idx is None or max_dates <= 0:
         return {}
 
     # 2) Spalten -> Datum
-    date_cols: dict = {}
-    for col in mp_df.columns[1:]:
-        v = mp_df.loc[date_row_idx, col]
-        if isinstance(v, pd.Timestamp):
-            date_cols[col] = v.date()
+    date_cols = {}
+    for c in range(2, max_col + 1):
+        v = ws.cell(row=date_row_idx, column=c).value
+        if isinstance(v, datetime):
+            date_cols[c] = v.date()
 
-    # 3) Personen-Zeilen finden
-    name_col = mp_df.iloc[:, 0].astype(str)
-
+    # 3) Personenfarben aus der Legende (Spalte A + Farbfeld in Spalte B)
     def norm_name(s: str) -> str:
         return s.split(":")[0].strip().lower()
 
-    person_rows: dict = {}
-    for person in personen:
-        base = norm_name(person)
-        hits = name_col[name_col.apply(lambda x: norm_name(x) == base)]
-        if not hits.empty:
-            person_rows[person] = hits.index[0]
+    person_colors = {}
+    for r in range(1, 20):  # Legende ist oben irgendwo, z.B. Zeilen 1–10
+        cell_name = ws.cell(row=r, column=1).value
+        if not isinstance(cell_name, str):
+            continue
+        base = norm_name(cell_name)
+        for p in personen:
+            if base == p.strip().lower():
+                fill = ws.cell(row=r, column=2).fill
+                col = None
+                if fill and fill.fgColor and fill.fgColor.type != "indexed":
+                    col = fill.fgColor.rgb
+                person_colors[p] = col
 
-    availability: dict = {}
-    for person, ridx in person_rows.items():
-        for col, d in date_cols.items():
-            cell = mp_df.loc[ridx, col]
-            status = "Frei"
+    # 4) Verfügbarkeit per Farbe bestimmen
+    availability = {}
 
-            if isinstance(cell, str):
-                txt = cell.strip().lower()
-                if txt == "":
-                    status = "Frei"
-                elif txt in ("u", "urlaub"):
-                    status = "Blockiert"
-                else:
-                    status = "Blockiert"
-            else:
-                if pd.isna(cell):
-                    status = "Frei"
-                else:
-                    status = "Blockiert"
+    # Wir gehen alle Datumsspalten und alle Zeilen durch
+    for c, d in date_cols.items():
+        for r in range(1, max_row + 1):
+            cell = ws.cell(row=r, column=c)
+            fill = cell.fill
+            col = None
+            if fill and fill.fgColor and fill.fgColor.type != "indexed":
+                col = fill.fgColor.rgb
 
-            availability[(person, d)] = status
+            if not col or col == "00000000":
+                continue  # keine relevante Farbe
+
+            # Prüfen, ob diese Farbe zu einer Person gehört
+            for person, p_color in person_colors.items():
+                if p_color and col == p_color:
+                    availability[(person, d)] = "Blockiert"
 
     return availability
 
@@ -129,29 +146,28 @@ for person in personen:
     person_roles[person] = st.multiselect(
         f"Rollen für **{person}**",
         options=rollen,
-        default=rollen,  # standard: alle können alles, kannst du anpassen
+        default=rollen,  # standard: alle können alles, du kannst abwählen
         key=f"roles_{person}"
     )
 
 # ---------------------------------------------------------
-# 2️⃣ MP-KALENDER HOCHLADEN (OPTIONAL)
+# 2️⃣ MP-KALENDER HOCHLADEN (FARBEN)
 # ---------------------------------------------------------
-st.subheader("2️⃣ MP-Kalender (optional)")
+st.subheader("2️⃣ MP-Kalender mit Farblegende (optional)")
 
 mp_file = st.file_uploader(
-    "MP.xlsx hochladen (interner Kalender mit Urlaub / anderen Projekten)",
+    "MP.xlsx hochladen (interner Kalender mit farbigen Balken für Personen)",
     type=["xlsx"]
 )
 
 mp_availability = None
 if mp_file is not None:
     try:
-        mp_df = pd.read_excel(mp_file)
-        mp_availability = load_mp_availability(mp_df, personen)
-        st.success("MP.xlsx geladen und Verfügbarkeiten erkannt.")
+        mp_availability = load_mp_availability_by_color(mp_file, personen)
+        st.success("MP.xlsx geladen. Verfügbarkeit anhand der Farben erkannt.")
         st.caption(
-            "Tage, an denen eine Person im MP-Kalender Einträge (Urlaub/Projekte) hat, "
-            "werden als blockiert behandelt. Nur 'leere' Zellen gelten als frei."
+            "Für jede Person werden alle Tage blockiert, an denen ihre Farbe im Kalender vorkommt. "
+            "Nur Tage ohne ihre Farbe gelten als frei."
         )
     except Exception as e:
         st.error(f"Fehler beim Einlesen von MP.xlsx: {e}")
@@ -367,6 +383,6 @@ if st.button("🚀 Planung berechnen"):
             st.download_button(
                 "Zuteilungen als CSV herunterladen",
                 data=csv_bytes,
-                file_name="Pergamon_MultiRole_Mit_MP_Zuteilungen.csv",
+                file_name="Pergamon_MultiRole_Mit_MP_Farben_Zuteilungen.csv",
                 mime="text/csv"
             )
