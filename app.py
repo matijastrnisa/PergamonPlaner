@@ -3,12 +3,13 @@ import pandas as pd
 from datetime import date, timedelta, datetime
 import plotly.express as px
 from openpyxl import load_workbook
+import holidays  # für gesetzliche Feiertage
 
 # ---------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------
 st.set_page_config(page_title="Pergamon Mini-Planer", layout="wide")
-st.title("🕌 Pergamon Mini-Planer – Rollen, Personen & MP-Farben")
+st.title("🕌 Pergamon Mini-Planer – Rollen, Personen, MP-Farben & Feiertage")
 
 st.markdown("""
 Diese Version erlaubt dir:
@@ -18,13 +19,21 @@ Diese Version erlaubt dir:
 - Pro Film für **jede Rolle** unterschiedliche Arbeitstage einzutragen  
 - `MP.xlsx` hochzuladen (interner Kalender mit Farblegende)  
 - Die App wertet die **Farben** im MP aus:
-
   - Links oben steht eine Legende: Name + Farbfläche  
   - Überall, wo diese Farbe im Kalender vorkommt, gilt die Person als **blockiert**  
-  - Nur Tage **ohne** ihre Farbe gelten als **frei**  
+- Zusätzlich wird **nicht** geplant:
+  - an Wochenenden (Samstag, Sonntag)  
+  - an gesetzlichen Feiertagen in **Berlin**  
 """)
 
 today = date.today()
+
+# Feiertage Berlin vorbereiten
+try:
+    berlin_holidays = holidays.country_holidays("DE", subdiv="BE")
+except Exception:
+    berlin_holidays = None  # falls das Paket aus irgendeinem Grund nicht funktioniert
+
 
 # ---------------------------------------------------------
 # HELFER: MP-KALENDER PER FARBE EINLESEN
@@ -113,6 +122,7 @@ def load_mp_availability_by_color(mp_file, personen: list[str]):
                     availability[(person, d)] = "Blockiert"
 
     return availability
+
 
 # ---------------------------------------------------------
 # 1️⃣ PERSONEN & ROLLEN DEFINIEREN
@@ -251,7 +261,11 @@ max_tage_pro_tag = st.number_input(
     value=1
 )
 
-st.markdown("_Hinweis: Es wird **nicht in der Vergangenheit** geplant (nur ab heute)._")
+st.markdown("""
+- Es wird **nicht in der Vergangenheit** geplant (nur ab heute).  
+- Es wird **nicht** an Wochenenden (Sa/So) geplant.  
+- Es wird **nicht** an Berliner Feiertagen geplant.
+""")
 
 # ---------------------------------------------------------
 # 5️⃣ PLANUNG STARTEN
@@ -272,16 +286,26 @@ if st.button("🚀 Planung berechnen"):
             ende = film["BS_Ende"]
             role_days = film["Role_Days"]
 
-            # gültige Tage im BS-Fenster ab heute
+            # gültige Tage im BS-Fenster:
+            # - ab heute
+            # - kein Wochenende
+            # - kein Berliner Feiertag
             tage = []
             current = start
             while current <= ende:
                 if current >= today:
-                    tage.append(current)
+                    is_weekend = current.weekday() >= 5  # 5=Sa, 6=So
+                    is_holiday = False
+                    if berlin_holidays is not None:
+                        is_holiday = current in berlin_holidays
+
+                    if (not is_weekend) and (not is_holiday):
+                        tage.append(current)
+
                 current += timedelta(days=1)
 
             if not tage:
-                st.warning(f"⚠️ Film „{film_name}“: keine planbaren Tage (alles in der Vergangenheit?).")
+                st.warning(f"⚠️ Film „{film_name}“: keine planbaren Tage (alles Wochenende / Feiertag / Vergangenheit?).")
                 continue
 
             # pro Rolle planen
@@ -383,6 +407,6 @@ if st.button("🚀 Planung berechnen"):
             st.download_button(
                 "Zuteilungen als CSV herunterladen",
                 data=csv_bytes,
-                file_name="Pergamon_MultiRole_Mit_MP_Farben_Zuteilungen.csv",
+                file_name="Pergamon_MultiRole_Mit_MP_Farben_und_Feiertagen.csv",
                 mime="text/csv"
             )
